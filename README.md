@@ -94,6 +94,17 @@ Linux/macOS 用 cron：
 git clone https://github.com/Lianghaoliu/gold-monitor-skill.git ~/.claude/skills/gold-monitor
 ```
 
+## 推送（针对国内网络）
+
+`push.sh` 会在推送失败时自动重试，专门对付 `github.com:443` 的间歇性超时：
+
+```bash
+./push.sh              # 推当前分支，默认重试 5 次
+PUSH_RETRIES=10 ./push.sh
+```
+
+被拒绝（远程有新提交）或凭据失效时不会无谓重试，直接退出并给出下一步命令。
+
 ## License
 
 MIT
