@@ -1,0 +1,70 @@
+{
+  "_说明": "复制为 scripts/gold_config.json 后按需修改。cny_support1 / cny_resistance1 可以整个删掉——脚本会按金债比 0.8 / 1.0 档自动推导，阈值随 10Y 收益率动态走，不需要人工维护。",
+
+  "support1": 3870,
+  "support2": 3800,
+  "support3": 3730,
+  "resistance1": 3950,
+  "resistance2": 4000,
+  "resistance3": 4080,
+
+  "gold_bond_ratio": {
+    "formula": "gold_usd_per_oz / (yield_10y_pct * divisor)",
+    "divisor": 1000,
+    "support": 0.6,
+    "resistance": 1.23,
+    "yield_10y": 4.94,
+    "yield_date": "2026-10-30",
+    "levels": [
+      {"ratio": 0.6, "label": "强支撑", "role": "support"},
+      {"ratio": 0.7, "label": "支撑", "role": "support"},
+      {"ratio": 0.8, "label": "近端支撑", "role": "support"},
+      {"ratio": 1.0, "label": "阻力", "role": "resistance"},
+      {"ratio": 1.1, "label": "近端阻力", "role": "resistance"},
+      {"ratio": 1.23, "label": "强阻力", "role": "resistance"}
+    ],
+    "note": "金债比 = 金价 / (10Y美债收益率% × 1000)。六档价位随 10Y 收益率实时反推，并已按内外盘溢价折算成国内积存金价。"
+  },
+
+  "macro": {
+    "as_of": "YYYY-MM-DD",
+    "bias_label": "中性",
+    "fed": "待更新：最近议息结果、官员表态、下次会议加息/降息概率",
+    "nfp": "待更新：最新非农新增、失业率、薪资增速",
+    "inflation": "待更新：最新 CPI/PPI/核心PCE、10Y 实际利率",
+    "ratio_view": "待更新：宏观偏向如何影响金债比档位",
+    "note": "这一块是人工或 AI 每日更新的定性判断，脚本不自动抓取。超过 1 天未更新会在简报里标『已过期 N 天』。"
+  },
+
+  "sentiment": {
+    "note": "三项全自动：SPDR 官方历史归档(XLSX)、VIX(CBOE 主/Yahoo 备)、内外盘溢价(上金所 Au99.99 vs 国际折算)。thresholds 可调，direction 非 auto 时人工覆盖优先。",
+    "thresholds": {
+      "spdr_5d_inflow_t": 2.0,
+      "spdr_5d_outflow_t": -2.0,
+      "spdr_1d_inflow_t": 1.0,
+      "spdr_1d_outflow_t": -1.0,
+      "vix_high": 25.0,
+      "vix_low": 15.0,
+      "premium_high_pct": 2.0,
+      "premium_low_pct": -0.5,
+      "stale_days_spdr": 5,
+      "stale_days_vix": 4,
+      "min_indicators": 2
+    },
+    "spdr": {"manual_override": null, "direction": "auto"},
+    "vix": {"fallback_last": null, "fallback_as_of": null, "direction": "auto"},
+    "premium": {"mode": "domestic", "direction": "auto"}
+  },
+
+  "tech": {
+    "series": "aum",
+    "sina_symbol": "AU0",
+    "ma_fast": 5,
+    "ma_slow": 60,
+    "boll_m": 20,
+    "boll_k": 2,
+    "note": "MA5/MA60 定趋势方向，布林带定位置；以日线收盘确认。数据源：新浪沪金主力连续 AU0 主 / 东方财富 113.aum 备。"
+  },
+
+  "updated": "YYYY-MM-DD"
+}

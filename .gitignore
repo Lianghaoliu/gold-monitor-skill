@@ -1,0 +1,20 @@
+# 本地配置与运行状态，绝不入库
+scripts/gold_config.json
+gold_config.json
+gold_tech_state.json
+gold_sent_state.json
+gold_monitor.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
