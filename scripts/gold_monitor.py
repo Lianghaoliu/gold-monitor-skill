@@ -779,6 +779,145 @@ def load_config():
         return None
 
 
+# ---------- 工行积存金手续费与盈亏测算 ----------
+# 工行现行规则（icbc.com.cn 积存金定投须知）：积存价与赎回价一致，没有点差；
+# 积存、赎回各按金额的 0.5% 收手续费。手续费从金额里扣，所以买入的实际
+# 成本单价是 价格÷(1-费率)，不是 价格×(1+费率)——差一点点，但别写错。
+def fee_params(cfg):
+    """手续费参数（小数）。缺省按工行标准费率：买卖各 0.5%、无点差。"""
+    f = (cfg or {}).get("fees") or {}
+    try:
+        return {
+            "buy": float(f.get("buy_rate_pct", 0.5)) / 100.0,
+            "sell": float(f.get("sell_rate_pct", 0.5)) / 100.0,
+            "spread": float(f.get("spread_cny_per_g", 0.0)),
+        }
+    except (TypeError, ValueError):
+        logging.warning("fees 配置无法解析，按 0.5%/0.5%/0 点差处理")
+        return {"buy": 0.005, "sell": 0.005, "spread": 0.0}
+
+
+def buy_effective_cost(quote, cfg):
+    """买入价 → 实际成本单价（含买入手续费与点差）。"""
+    p = fee_params(cfg)
+    if p["buy"] >= 1:
+        return quote
+    return quote / (1 - p["buy"]) + p["spread"]
+
+
+def sell_net_price(quote, cfg):
+    """赎回价 → 实际到手单价（扣赎回手续费与点差）。"""
+    p = fee_params(cfg)
+    return quote * (1 - p["sell"]) - p["spread"]
+
+
+def breakeven_price(cost_per_g, cfg):
+    """成本单价对应的保本赎回价：卖到这个价才不亏。"""
+    p = fee_params(cfg)
+    if p["sell"] >= 1:
+        return cost_per_g
+    return (cost_per_g + p["spread"]) / (1 - p["sell"])
+
+
+def calc_sell(quote, cfg, grams=None, cost_per_g=None):
+    """按赎回价 quote 测算到手金额、盈亏与保本价。持仓未填时只算到手价。"""
+    p = fee_params(cfg)
+    h = (cfg or {}).get("holding") or {}
+    try:
+        g = float(grams if grams is not None else (h.get("grams") or 0))
+        c = float(cost_per_g if cost_per_g is not None else (h.get("cost_per_g") or 0))
+    except (TypeError, ValueError):
+        g = c = 0.0
+    net = sell_net_price(quote, cfg)
+    out = {"quote": quote, "net": net, "fee_rate_pct": p["sell"] * 100,
+           "fee_px": quote * p["sell"], "spread": p["spread"],
+           "grams": g, "cost_per_g": c if c > 0 else None}
+    if g > 0 and c > 0:
+        proceeds, cost_total = net * g, c * g
+        out.update(proceeds=proceeds, cost_total=cost_total,
+                   pnl=proceeds - cost_total,
+                   pnl_pct=(proceeds - cost_total) / cost_total * 100,
+                   breakeven=breakeven_price(c, cfg))
+    return out
+
+
+def buy_cost_line(quote, cfg):
+    """买入卡片用：实际成本单价 + 卖出保本价。"""
+    try:
+        p = fee_params(cfg)
+        cost = buy_effective_cost(quote, cfg)
+        be = breakeven_price(cost, cfg)
+        return (f"成本：按 {quote:.0f} 买入实得 **{cost:.1f} 元/克**"
+                f"（买入费 {p['buy'] * 100:g}%）｜卖出保本需 **{be:.0f}**")
+    except Exception as e:  # 费率配置异常不能挡住提醒
+        logging.warning(f"buy_cost_line failed: {e}")
+        return ""
+
+
+def sell_pnl_line(quote, cfg):
+    """卖出卡片用：到手单价 + 持仓盈亏 + 保本价。"""
+    try:
+        s = calc_sell(quote, cfg)
+        line = f"到手：**{s['net']:.1f} 元/克**（扣赎回费 {s['fee_rate_pct']:g}%）"
+        if s["cost_per_g"]:
+            line += (f"｜盈亏 **{s['pnl']:+,.0f} 元"
+                     f"（{s['pnl_pct']:+.1f}%）**｜保本 **{s['breakeven']:.0f}**")
+        return line
+    except Exception as e:
+        logging.warning(f"sell_pnl_line failed: {e}")
+        return ""
+
+
+def print_fee_block(cny_price, cfg):
+    """简报里的持仓与手续费段。"""
+    p = fee_params(cfg)
+    h = cfg.get("holding") or {}
+    s = calc_sell(cny_price, cfg)
+    print()
+    print("## 持仓与手续费（工商银行积存金）")
+    print(f"- 费率：买入 {p['buy'] * 100:g}%｜赎回 {p['sell'] * 100:g}%"
+          f"｜点差 {p['spread']:g} 元/克（工行现行：买卖各 0.5%、无点差）")
+    print(f"- 当前 {cny_price} 元/克 → 卖出到手 **{s['net']:.1f}**"
+          f"｜买入实得成本 **{buy_effective_cost(cny_price, cfg):.1f}**")
+    if s["cost_per_g"]:
+        print(f"- 持仓 {s['grams']:.2f} 克，成本 {s['cost_per_g']:.2f} 元/克"
+              f"（合计 {s['cost_total']:,.0f} 元）")
+        print(f"- 按现价卖出：到账 **{s['proceeds']:,.0f} 元**，"
+              f"盈亏 **{s['pnl']:+,.0f} 元（{s['pnl_pct']:+.2f}%）**")
+        print(f"- 保本价：**{s['breakeven']:.1f} 元/克**"
+              f"（现价高于此线卖出才不亏）")
+    else:
+        print("- 持仓：未设置（在 gold_config.json 的 holding 里填 grams / cost_per_g）")
+        print(f"- 保本价：按买入价反算即可，或跑 `--calc 价 [--grams 克] [--cost 成本]`")
+
+
+def run_calc(price, grams=None, cost=None):
+    """--calc：离线测算某个价格卖出赚还是赔。"""
+    cfg = load_config() or {}
+    s = calc_sell(price, cfg, grams=grams, cost_per_g=cost)
+    bc = buy_effective_cost(price, cfg)
+    print(f"## 积存金测算 @ 赎回价 {price:.2f} 元/克")
+    print(f"- 扣除赎回手续费 {s['fee_rate_pct']:g}%"
+          f"（{s['fee_px']:.2f} 元/克）"
+          + (f"与点差 {s['spread']:g}" if s["spread"] else ""))
+    print(f"- 到手单价：**{s['net']:.2f} 元/克**")
+    if price > 0:
+        print(f"- 若按此价买入：实得成本 **{bc:.2f} 元/克**，"
+              f"卖出保本需 **{breakeven_price(bc, cfg):.2f}**")
+    if s["cost_per_g"]:
+        print(f"- 持仓 {s['grams']:.2f} 克 × 成本 {s['cost_per_g']:.2f} 元/克"
+              f" = 投入 {s['cost_total']:,.2f} 元")
+        print(f"- 卖出到账：**{s['proceeds']:,.2f} 元**")
+        print(f"- 盈亏：**{s['pnl']:+,.2f} 元（{s['pnl_pct']:+.2f}%）**")
+        print(f"- 保本价：**{s['breakeven']:.2f} 元/克**")
+        gain = price - s["breakeven"]
+        print(f"- 现价距保本：{gain:+.2f} 元/克"
+              f"（{'已盈利' if gain >= 0 else '仍亏损'}）")
+    else:
+        print("- 未提供持仓：加 `--grams 克数 --cost 成本单价` 可算盈亏")
+    return 0
+
+
 def send_feishu_cny(usd_price, cny_price, direction, cfg, ratio_text="", sent=None,
                     basis=None):
     """发送积存金买卖提醒卡片。sent 为 compute_sentiment 的结果，可为 None。
@@ -800,7 +939,8 @@ def send_feishu_cny(usd_price, cny_price, direction, cfg, ratio_text="", sent=No
             f"当前积存金参考价{price_tag}：**{cny_price} 元/克**\n"
             f"国际金价：{usd_price:,.2f} 美元/盎司\n"
             f"{ratio_line}{macro_line}"
-            f"买入阈值：≤ {cfg['cny_support1']} 元/克\n\n"
+            f"买入阈值：≤ {cfg['cny_support1']} 元/克\n"
+            f"{buy_cost_line(cny_price, cfg)}\n\n"
             f"操作：{cny_price}–{cfg['cny_support1']} 挂单买入首笔，≤1/3 仓{suffix}"
         )
         tag_text = f"买入信号 | {now}"
@@ -812,7 +952,8 @@ def send_feishu_cny(usd_price, cny_price, direction, cfg, ratio_text="", sent=No
             f"当前积存金参考价{price_tag}：**{cny_price} 元/克**\n"
             f"国际金价：{usd_price:,.2f} 美元/盎司\n"
             f"{ratio_line}{macro_line}"
-            f"卖出阈值：≥ {cfg['cny_resistance1']} 元/克\n\n"
+            f"卖出阈值：≥ {cfg['cny_resistance1']} 元/克\n"
+            f"{sell_pnl_line(cny_price, cfg)}\n\n"
             f"操作：{cfg['cny_resistance1']}–{cny_price} 挂单卖出首笔，≤1/3 仓{suffix}"
         )
         tag_text = f"卖出信号 | {now}"
@@ -852,7 +993,7 @@ def send_feishu_ratio(ratio, usd_price, cny_price, direction, cfg, levels_text="
             f"**金债比已升至长期强阻力区（≥ {r['resistance']}）**\n\n"
             f"当前金债比：**{ratio:.3f}**\n"
             f"国际金价：{usd_price} 美元/盎司（{cny_price} 元/克）\n"
-            f"{macro_line}{level_block}"
+            f"{macro_line}{sell_pnl_line(cny_price, cfg)}\n{level_block}"
             f"\n操作：高估区分批止盈，≤1/3 仓{suffix}"
         )
         tag_text = f"金债比高估 | {now}"
@@ -890,7 +1031,7 @@ def _post_card(template, title, body, tag_text):
     return json.loads(resp.read().decode("utf-8"))
 
 
-def send_feishu_tech(tech, cfg, ratio_text="", sent=None):
+def send_feishu_tech(tech, cfg, ratio_text="", sent=None, cny_price=None):
     """MA5/MA60 金叉/死叉（日线收盘确认）推送。"""
     now = datetime.now().strftime("%m-%d %H:%M")
     direction = tech["last_cross_type"]
@@ -922,8 +1063,11 @@ def send_feishu_tech(tech, cfg, ratio_text="", sent=None):
     else:
         template = "green"
         title = "死叉提醒 — 沪金 MA5/MA60"
+        fee_line = sell_pnl_line(cny_price, cfg) if cny_price else ""
         body = (f"**MA5 下穿 MA60，中期趋势转空（死叉确认）**\n\n"
-                f"{detail}\n操作：反弹中轨/上轨分批减仓，不抄底{suffix}")
+                f"{detail}"
+                + (f"{fee_line}\n" if fee_line else "")
+                + f"\n操作：反弹中轨/上轨分批减仓，不抄底{suffix}")
         tag_text = f"死叉信号 | {now}"
 
     result = _post_card(template, title, body, tag_text)
@@ -1061,6 +1205,7 @@ def print_brief(usd_price, gold_updated, rate, fx_updated, cny_price,
             intraday_pos = "上轨外（盘中超买）"
         print(f"- 盘中参考：积存金 {cny_price} 元/克 → {intraday_pos}"
               f"（信号以日线收盘确认为准）")
+    print_fee_block(cny_price, cfg)
 
 
 def run_selftest():
@@ -1121,6 +1266,35 @@ def run_selftest():
     check("旧口径（期货价）会算出假溢价，已不再使用",
           fake is not None and fake["pct"] > 2.0, fake and round(fake["pct"], 2))
 
+    # 手续费与盈亏：工行买卖各 0.5%、无点差
+    icbc = {"fees": {"buy_rate_pct": 0.5, "sell_rate_pct": 0.5,
+                     "spread_cny_per_g": 0}}
+    check("赎回到手价 800 → 796.0", abs(sell_net_price(800, icbc) - 796.0) < 1e-9,
+          sell_net_price(800, icbc))
+    check("买入成本 800 → 804.02（费从金额扣，是除不是乘）",
+          abs(buy_effective_cost(800, icbc) - 800 / 0.995) < 1e-9,
+          buy_effective_cost(800, icbc))
+    check("保本价 804.02 → 808.06",
+          abs(breakeven_price(800 / 0.995, icbc) - 800 / 0.995 / 0.995) < 1e-9,
+          breakeven_price(800 / 0.995, icbc))
+    rt = calc_sell(800, icbc, grams=10, cost_per_g=800 / 0.995)
+    check("原价买卖一轮亏约 1%（双边各 0.5%）",
+          -1.5 < rt["pnl_pct"] < -0.9, round(rt["pnl_pct"], 3))
+    check("盈亏金额 = 到手 - 成本",
+          abs(rt["pnl"] - (rt["proceeds"] - rt["cost_total"])) < 1e-9, rt["pnl"])
+    zero = {"fees": {"buy_rate_pct": 0, "sell_rate_pct": 0, "spread_cny_per_g": 0}}
+    check("零费率时到手价=赎回价", abs(sell_net_price(800, zero) - 800) < 1e-9)
+    check("缺配置时按工行默认费率", abs(sell_net_price(1000, {}) - 995.0) < 1e-9,
+          sell_net_price(1000, {}))
+    no_hold = calc_sell(800, icbc)
+    check("未设持仓不瞎算盈亏", "pnl" not in no_hold)
+    buy_line = buy_cost_line(831, icbc)
+    sell_line = sell_pnl_line(848, {"fees": icbc["fees"],
+                                    "holding": {"grams": 10, "cost_per_g": 800}})
+    check("买入卡片成本行非空", "保本" in buy_line, buy_line)
+    check("卖出卡片盈亏行含盈亏与保本",
+          "盈亏" in sell_line and "保本" in sell_line, sell_line)
+
     print(f"\n{'全部通过' if not fails else '失败 ' + str(len(fails)) + ' 项'}")
     return 0 if not fails else 1
 
@@ -1129,6 +1303,22 @@ def main():
     global DRY_RUN
     if "--selftest" in sys.argv:
         sys.exit(run_selftest())
+    if "--calc" in sys.argv:
+        args = sys.argv[sys.argv.index("--calc") + 1:]
+        try:
+            price = float(args[0])
+        except (IndexError, ValueError):
+            print("用法：--calc 赎回价 [--grams 克数] [--cost 成本单价]")
+            sys.exit(2)
+        opts = {}
+        for flag in ("--grams", "--cost"):
+            if flag in args:
+                try:
+                    opts[flag] = float(args[args.index(flag) + 1])
+                except (IndexError, ValueError):
+                    print(f"{flag} 后面要跟数字")
+                    sys.exit(2)
+        sys.exit(run_calc(price, opts.get("--grams"), opts.get("--cost")))
     if "--dry-run" in sys.argv:
         DRY_RUN = True
 
@@ -1318,7 +1508,8 @@ def main():
                 logging.info(f"TECH CROSS: {tech['last_cross_type']} on "
                              f"{tech['last_cross_date']}")
                 try:
-                    send_feishu_tech(tech, cfg, ratio_text=ratio_text, sent=sent)
+                    send_feishu_tech(tech, cfg, ratio_text=ratio_text, sent=sent,
+                                     cny_price=cny_price)
                 except Exception as e:
                     logging.error(f"Failed to send tech alert: {e}")
                 triggered = True

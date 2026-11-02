@@ -36,6 +36,20 @@
     "note": "这一块是人工或 AI 每日更新的定性判断，脚本不自动抓取。超过 1 天未更新会在简报里标『已过期 N 天』。"
   },
 
+  "holding": {
+    "grams": 0,
+    "cost_per_g": 0,
+    "as_of": "YYYY-MM-DD",
+    "note": "grams=持有克数；cost_per_g=实际成本单价（含买入手续费，工行 APP「持仓成本价」直接填）。留 0 则卡片和简报不显示盈亏，用 --calc 仍可单独测算。"
+  },
+
+  "fees": {
+    "buy_rate_pct": 0.5,
+    "sell_rate_pct": 0.5,
+    "spread_cny_per_g": 0,
+    "note": "工行积存金现行规则：积存价与赎回价一致（无点差），积存、赎回各按金额 0.5% 收手续费。2026-08-28 至 11-28 主动积存买入限时 0 费率、定投 0 费率至 12-31，但赎回始终 0.5%。如意积存金是点差制，把 spread_cny_per_g 填 15 左右、两个费率填 0。"
+  },
+
   "sentiment": {
     "note": "三项全自动：SPDR 官方历史归档(XLSX)、VIX(CBOE 主/Yahoo 备)、内外盘溢价(上金所 Au99.99 vs 国际折算)。thresholds 可调，direction 非 auto 时人工覆盖优先。",
     "thresholds": {
