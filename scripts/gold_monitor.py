@@ -867,32 +867,36 @@ def buy_cost_line(quote, cfg):
 
 
 def sell_pnl_line(quote, cfg):
-    """卖出卡片用：到手单价 + 持仓盈亏 + 保本价。"""
+    """卖出卡片用：到手单价（有克数时再给总到账与总盈亏）。"""
     try:
         s = calc_sell(quote, cfg)
         line = f"到手：**{s['net']:.1f} 元/克**（扣赎回费 {s['fee_rate_pct']:g}%）"
         if s.get("pnl") is not None:
-            line += (f"｜盈亏 **{s['pnl']:+,.0f} 元"
-                     f"（{s['pnl_pct']:+.1f}%）**｜保本 **{s['breakeven']:.0f}**")
-        elif s["cost_per_g"]:
-            line += (f"｜每克 **{s['pnl_per_g']:+.1f} 元"
-                     f"（{s['pnl_pct']:+.1f}%）**｜保本 **{s['breakeven']:.0f}**")
+            line += (f"｜到账 **{s['proceeds']:,.0f} 元**，"
+                     f"盈亏 **{s['pnl']:+,.0f} 元**")
         return line
     except Exception as e:
         logging.warning(f"sell_pnl_line failed: {e}")
         return ""
 
 
-def sell_action_line(quote, cfg, resistance=None, suffix=""):
-    """卖出类卡片的「操作」行。低于保本价时不劝卖，改成暂缓并给保本价。"""
-    gap = below_breakeven(quote, cfg)
-    if gap is not None:
-        be = calc_sell(quote, cfg)["breakeven"]
-        return (f"操作：暂缓卖出。此价到手仍亏 {gap:.1f} 元/克，"
-                f"等回到 **{be:.0f}** 以上再挂单")
-    if resistance is not None:
-        return (f"操作：{resistance}–{quote} 挂单卖出首笔，≤1/3 仓{suffix}")
-    return f"操作：高估区分批止盈，≤1/3 仓{suffix}"
+def breakeven_note(quote, cfg):
+    """独立的一行保本提示：只给信息，不改阈值、不改操作建议。"""
+    try:
+        s = calc_sell(quote, cfg)
+        be = s.get("breakeven")
+        if not be:
+            return ""
+        px, pct = s.get("pnl_per_g"), s.get("pnl_pct")
+        if px is None:
+            return f"保本提示：保本价 **{be:.1f}** 元/克"
+        word = "赚" if px >= 0 else "亏"
+        need = f"，需再涨 **{abs(pct):.2f}%** 才回本" if px < 0 else ""
+        return (f"保本提示：保本价 **{be:.1f}** 元/克｜此价卖出每克"
+                f"{word} **{abs(px):.2f} 元（{abs(pct):.2f}%）**{need}")
+    except Exception as e:
+        logging.warning(f"breakeven_note failed: {e}")
+        return ""
 
 
 def print_fee_block(cny_price, cfg):
@@ -984,15 +988,16 @@ def send_feishu_cny(usd_price, cny_price, direction, cfg, ratio_text="", sent=No
     else:
         template = "green"
         title = "卖出提醒 — 积存金"
-        # 价位到了但还不够保本时，操作建议必须改成「暂缓」，不能既提醒卖又提示亏
-        op = sell_action_line(cny_price, cfg, cfg["cny_resistance1"], suffix)
+        note = breakeven_note(cny_price, cfg)
+        note_line = f"{note}\n" if note else ""
         body = (
             f"**积存金已突破卖出阻力位！**\n\n"
             f"当前积存金参考价{price_tag}：**{cny_price} 元/克**\n"
             f"国际金价：{usd_price:,.2f} 美元/盎司\n"
             f"{ratio_line}{macro_line}"
             f"卖出阈值：≥ {cfg['cny_resistance1']} 元/克\n"
-            f"{sell_pnl_line(cny_price, cfg)}\n\n{op}"
+            f"{sell_pnl_line(cny_price, cfg)}\n{note_line}\n"
+            f"操作：{cfg['cny_resistance1']}–{cny_price} 挂单卖出首笔，≤1/3 仓{suffix}"
         )
         tag_text = f"卖出信号 | {now}"
 
@@ -1031,8 +1036,9 @@ def send_feishu_ratio(ratio, usd_price, cny_price, direction, cfg, levels_text="
             f"**金债比已升至长期强阻力区（≥ {r['resistance']}）**\n\n"
             f"当前金债比：**{ratio:.3f}**\n"
             f"国际金价：{usd_price} 美元/盎司（{cny_price} 元/克）\n"
-            f"{macro_line}{sell_pnl_line(cny_price, cfg)}\n{level_block}"
-            f"\n{sell_action_line(cny_price, cfg, None, suffix)}"
+            f"{macro_line}{sell_pnl_line(cny_price, cfg)}\n"
+            f"{breakeven_note(cny_price, cfg)}\n{level_block}"
+            f"\n操作：高估区分批止盈，≤1/3 仓{suffix}"
         )
         tag_text = f"金债比高估 | {now}"
 
@@ -1102,9 +1108,11 @@ def send_feishu_tech(tech, cfg, ratio_text="", sent=None, cny_price=None):
         template = "green"
         title = "死叉提醒 — 沪金 MA5/MA60"
         fee_line = sell_pnl_line(cny_price, cfg) if cny_price else ""
+        note = breakeven_note(cny_price, cfg) if cny_price else ""
         body = (f"**MA5 下穿 MA60，中期趋势转空（死叉确认）**\n\n"
                 f"{detail}"
                 + (f"{fee_line}\n" if fee_line else "")
+                + (f"{note}\n" if note else "")
                 + f"\n操作：反弹中轨/上轨分批减仓，不抄底{suffix}")
         tag_text = f"死叉信号 | {now}"
 
@@ -1330,8 +1338,9 @@ def run_selftest():
     sell_line = sell_pnl_line(848, {"fees": icbc["fees"],
                                     "holding": {"grams": 10, "cost_per_g": 800}})
     check("买入卡片成本行非空", "保本" in buy_line, buy_line)
-    check("卖出卡片盈亏行含盈亏与保本",
-          "盈亏" in sell_line and "保本" in sell_line, sell_line)
+    check("卖出卡片带总到账与盈亏",
+          "到账" in sell_line and "盈亏" in sell_line, sell_line)
+    check("卖出卡片到手价已扣费", "843.8" in sell_line, sell_line)
 
     # 只知道成本、不知道克数
     cost_only = {"fees": icbc["fees"], "holding": {"cost_per_g": 848}}
@@ -1346,13 +1355,19 @@ def run_selftest():
     check("低于保本价给出亏损提示", below_breakeven(837, cost_only) is not None,
           below_breakeven(837, cost_only))
     check("高于保本价不提示亏损", below_breakeven(860, cost_only) is None)
-    check("低于保本价时操作改为暂缓", "暂缓" in sell_action_line(837, cost_only, 847),
-          sell_action_line(837, cost_only, 847))
-    check("高于保本价时正常提示卖出",
-          "挂单卖出" in sell_action_line(860, cost_only, 847),
-          sell_action_line(860, cost_only, 847))
-    check("未设成本时卖出操作不受影响",
-          "挂单卖出" in sell_action_line(837, icbc, 847))
+    # 保本提示是一行独立信息，不改阈值也不改操作建议
+    note_below = breakeven_note(837, cost_only)
+    check("低于保本价：提示亏多少", "亏" in note_below and "需再涨" in note_below,
+          note_below)
+    note_above = breakeven_note(860, cost_only)
+    check("高于保本价：提示赚多少且不出现需再涨",
+          "赚" in note_above and "需再涨" not in note_above, note_above)
+    check("未设成本时不给保本提示", breakeven_note(837, icbc) == "")
+    check("提示里带保本价", "852.3" in breakeven_note(837, cost_only),
+          breakeven_note(837, cost_only))
+    # 操作建议仍由行情阈值决定，不因成本价改写
+    check("操作行文案不受持仓成本影响",
+          "挂单卖出" not in note_below and "操作" not in note_below, note_below)
 
     print(f"\n{'全部通过' if not fails else '失败 ' + str(len(fails)) + ' 项'}")
     return 0 if not fails else 1
